@@ -2,51 +2,26 @@ import json
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
+from app.prompts.loader import DEFAULT_VERSION, available_versions, render_estimation_prompt
+from app.schemas import EstimationRequest, EstimationResponse, PromptPreview, TokenUsage
 from app.services import llm_service
-from app.services.llm_service import generate_estimation
 from app.services.providers import LLMError, LLMResult
 
 router = APIRouter(tags=["estimations"])
 
-
-class EstimationRequest(BaseModel):
-    transcription: str = Field(
-        min_length=20,
-        description="Transcripción de la reunión con el cliente",
-        examples=["En la reunión con el cliente se discutió la necesidad de..."],
-    )
+PromptVersion = Query(DEFAULT_VERSION, description="Versión del prompt (v1, v2...)")
 
 
-class TokenUsage(BaseModel):
-    input_tokens: int
-    cached_input_tokens: int
-    output_tokens: int
-
-
-class EstimationResponse(BaseModel):
-    estimation: str
-    model: str
-    provider: str
-    usage: TokenUsage
-    cost_usd: float | None = Field(description="Coste estimado de la llamada al LLM")
-    cache_hit: bool
-    duration_ms: int
-    created_at: datetime
-
-
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str = Field(min_length=1)
-
-
-class ChatRequest(BaseModel):
-    messages: list[ChatMessage] = Field(min_length=1, description="Historial; el último es del usuario")
+def _check_version(version: str) -> None:
+    if version not in available_versions():
+        raise HTTPException(
+            status_code=422,
+            detail=f"prompt_version desconocida: {version}. Disponibles: {available_versions()}",
+        )
 
 
 def _usage(result: LLMResult) -> TokenUsage:
@@ -58,15 +33,19 @@ def _usage(result: LLMResult) -> TokenUsage:
 
 
 @router.post("/estimate", response_model=EstimationResponse)
-async def estimate(request: EstimationRequest) -> EstimationResponse:
+async def estimate(
+    request: EstimationRequest, prompt_version: str = PromptVersion
+) -> EstimationResponse:
+    _check_version(prompt_version)
     start = time.perf_counter()
     try:
-        result = await generate_estimation(request.transcription)
+        result = await llm_service.generate_estimation(request, prompt_version)
     except LLMError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
     return EstimationResponse(
-        estimation=result.text,
+        text=result.text,
+        prompt_version=prompt_version,
         model=result.model,
         provider=result.provider,
         usage=_usage(result),
@@ -77,25 +56,26 @@ async def estimate(request: EstimationRequest) -> EstimationResponse:
     )
 
 
-@router.post("/chat/stream")
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
-    """Conversación con el estimador, en streaming.
+@router.post("/estimate/stream")
+async def estimate_stream(
+    request: EstimationRequest, prompt_version: str = PromptVersion
+) -> StreamingResponse:
+    """Igual que /estimate pero en streaming.
 
     Devuelve NDJSON (un JSON por línea):
     `{"type": "delta", "text": "..."}` por cada fragmento,
     y al final `{"type": "done", ...métricas}` o `{"type": "error", "detail": "..."}`.
     """
-    if request.messages[-1].role != "user":
-        raise HTTPException(status_code=422, detail="El último mensaje debe ser del usuario")
-    messages = [m.model_dump() for m in request.messages]
+    _check_version(prompt_version)
 
     async def events() -> AsyncIterator[str]:
         start = time.perf_counter()
         try:
-            async for event in llm_service.stream(messages):
+            async for event in llm_service.stream_estimation(request, prompt_version):
                 if isinstance(event, LLMResult):
                     done = {
                         "type": "done",
+                        "prompt_version": prompt_version,
                         "model": event.model,
                         "provider": event.provider,
                         "usage": _usage(event).model_dump(),
@@ -112,7 +92,16 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     return StreamingResponse(events(), media_type="application/x-ndjson")
 
 
-@router.get("/context")
-def context() -> dict[str, str]:
-    """System prompt activo (instrucciones + ejemplos CAG). Lo muestra el cliente."""
-    return {"system_prompt": llm_service.SYSTEM_PROMPT}
+@router.post("/prompt/preview", response_model=PromptPreview)
+def prompt_preview(
+    request: EstimationRequest, prompt_version: str = PromptVersion
+) -> PromptPreview:
+    """Muestra el prompt que se mandaría al modelo, sin llamarlo (debug)."""
+    _check_version(prompt_version)
+    system, user = render_estimation_prompt(request, prompt_version)
+    return PromptPreview(prompt_version=prompt_version, system=system, user=user)
+
+
+@router.get("/prompt/versions")
+def prompt_versions() -> dict[str, list[str] | str]:
+    return {"versions": available_versions(), "default": DEFAULT_VERSION}

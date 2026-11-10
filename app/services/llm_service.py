@@ -1,7 +1,7 @@
 """Lógica de llamada al LLM.
 
 CAG: los ejemplos de estimaciones previas viajan en el system prompt de cada
-llamada. No hay retrieval: todo el contexto está precargado.
+llamada (ver app/prompts). No hay retrieval: todo el contexto está precargado.
 """
 
 import time
@@ -10,7 +10,8 @@ from collections.abc import AsyncIterator
 import structlog
 
 from app.config import settings
-from app.context.examples import ESTIMATION_EXAMPLES
+from app.prompts.loader import DEFAULT_VERSION, render_estimation_prompt
+from app.schemas import EstimationRequest
 from app.services.cache import ResponseCache
 from app.services.providers import (
     PROVIDER_ERRORS,
@@ -23,49 +24,6 @@ from app.services.providers import (
 )
 
 logger = structlog.get_logger()
-
-INSTRUCTIONS = """\
-Eres un estimador experto de proyectos de software. Recibirás la transcripción \
-de una reunión con un cliente y debes generar una estimación del proyecto.
-
-Basa tus estimaciones en los ejemplos de estimaciones previas que aparecen más \
-abajo: son proyectos reales de nuestro equipo y reflejan nuestros tiempos de \
-desarrollo asistido por IA, nuestra tarifa (USD 35/h) y nuestro criterio de \
-contingencia. Compara el nuevo proyecto con ellos para calibrar las horas.
-
-Reglas:
-- Responde en español, en markdown, siguiendo exactamente el formato de los ejemplos.
-- Desglosa el trabajo en tareas concretas con sus horas; el subtotal debe ser la suma exacta.
-- Aplica una contingencia del 15%, o del 20% si hay integraciones con terceros o \
-publicación en stores, y redondea a horas enteras.
-- Calcula el coste total con la tarifa de USD 35/h.
-- Si la transcripción deja dudas sobre el alcance, decláralas como supuestos en \
-lugar de inventar requisitos. Lista lo que queda fuera de alcance.
-- Cualquier web, app, integración o automatización cuenta como proyecto de software, \
-aunque la descripción sea breve. Solo si el texto no tiene nada que ver con \
-construir software, indícalo y no estimes.
-- Si en la conversación el usuario pide cambios o aclaraciones sobre una estimación \
-anterior, ajústala y devuelve la estimación completa actualizada."""
-
-
-def _format_examples() -> str:
-    blocks = []
-    for i, example in enumerate(ESTIMATION_EXAMPLES, start=1):
-        blocks.append(
-            f'<ejemplo numero="{i}">\n'
-            f"<resumen_reunion>\n{example['meeting_summary']}\n</resumen_reunion>\n"
-            f"<estimacion>\n{example['estimation']}\n</estimacion>\n"
-            f"</ejemplo>"
-        )
-    return "\n\n".join(blocks)
-
-
-# Se construye una sola vez: un system prompt idéntico entre llamadas permite
-# que el proveedor lo cachee (prompt caching).
-SYSTEM_PROMPT = (
-    f"{INSTRUCTIONS}\n\n"
-    f"<estimaciones_previas>\n{_format_examples()}\n</estimaciones_previas>"
-)
 
 _provider: LLMProvider | None = None
 cache = ResponseCache(ttl_seconds=settings.cache_ttl_seconds)
@@ -93,7 +51,7 @@ def _log_call(result: LLMResult, started: float, stream: bool) -> None:
     )
 
 
-async def complete(messages: list[Message], system: str = SYSTEM_PROMPT) -> LLMResult:
+async def complete(system: str, messages: list[Message]) -> LLMResult:
     """Llamada completa (sin streaming), con caché exact-match."""
     started = time.perf_counter()
     llm = provider()
@@ -111,9 +69,7 @@ async def complete(messages: list[Message], system: str = SYSTEM_PROMPT) -> LLMR
     return result
 
 
-async def stream(
-    messages: list[Message], system: str = SYSTEM_PROMPT
-) -> AsyncIterator[StreamEvent]:
+async def stream(system: str, messages: list[Message]) -> AsyncIterator[StreamEvent]:
     """Igual que `complete` pero emite el texto a medida que llega.
 
     Si la respuesta está en caché, se emite entera de una vez.
@@ -137,6 +93,26 @@ async def stream(
         raise LLMError(f"Error del proveedor LLM: {e}") from e
 
 
-async def generate_estimation(transcript: str) -> LLMResult:
-    """Genera una estimación a partir de la transcripción de una reunión."""
-    return await complete([{"role": "user", "content": transcript}])
+def _estimation_messages(
+    request: EstimationRequest, version: str
+) -> tuple[str, list[Message]]:
+    system, user = render_estimation_prompt(request, version)
+    # system y user van separados: el system es estable (cacheable por el
+    # proveedor), el user cambia en cada petición.
+    return system, [{"role": "user", "content": user}]
+
+
+async def generate_estimation(
+    request: EstimationRequest, version: str = DEFAULT_VERSION
+) -> LLMResult:
+    """Genera una estimación a partir de los parámetros del formulario."""
+    system, messages = _estimation_messages(request, version)
+    return await complete(system, messages)
+
+
+async def stream_estimation(
+    request: EstimationRequest, version: str = DEFAULT_VERSION
+) -> AsyncIterator[StreamEvent]:
+    system, messages = _estimation_messages(request, version)
+    async for event in stream(system, messages):
+        yield event
