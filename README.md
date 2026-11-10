@@ -23,6 +23,73 @@ uv run ruff check .
 
 Ningún test llama al LLM de verdad, usan un proveedor falso.
 
+## Sesión 05: memoria conversacional y adjuntos
+
+El estimador ahora mantiene una conversación: se puede refinar el alcance en varios turnos y adjuntar documentos.
+
+```bash
+SID=$(curl -s -X POST localhost:8000/api/v1/sessions | jq -r .session_id)
+curl -s localhost:8000/api/v1/sessions/$SID/estimate \
+  -F transcript="Quieren una app de reservas para 3 gimnasios" \
+  -F project_type=mobile_app -F attachments=@especificacion.pdf
+```
+
+Un turno, paso a paso:
+
+```mermaid
+flowchart TD
+    A[POST /sessions/id/estimate] --> B[Extraer texto de los adjuntos]
+    B --> C[Armar el prompt con project_metadata]
+    C --> D[Historial: últimos 6 turnos + mensaje nuevo]
+    D --> E[LLM: estimación]
+    E --> F[Guardar el turno en el historial]
+    F --> G[LLM extractor: actualizar project_metadata]
+    G --> H[Respuesta]
+```
+
+### Historial y memoria
+
+Son dos cosas separadas (`app/sessions.py`):
+
+- **Historial** (`ConversationHistory`): los mensajes que viajan al modelo. Ventana deslizante de `MAX_TURNS=6` pares user/assistant; los más viejos se descartan. El system prompt no se guarda, se regenera en cada turno.
+- **Memoria** (`ProjectMetadata`): nombre del proyecto, tamaño de equipo, tecnologías y alcance. Va en el system prompt dentro de `<project_metadata>` en todos los turnos, así que no se pierde aunque el turno donde se dijo ya haya salido de la ventana.
+
+Las sesiones viven en un diccionario en memoria. Se pierden si se reinicia el servicio; para esta fase alcanza.
+
+### Adjuntos: camino B (extracción local)
+
+Extraigo el texto en el servicio (`pypdf` para PDF, `python-docx` para Word) y lo concateno a la transcripción con `--- attachment: nombre.pdf ---`.
+
+Elegí B porque funciona igual con OpenAI y con Anthropic (ya tengo el wrapper con fallback), puedo ver qué texto entra al prompt y es lo que voy a necesitar para el chunking de RAG. Lo que se pierde son las imágenes y los diagramas. Un PDF escaneado sin texto se rechaza con 415.
+
+Límites: 10 MB por archivo, 20.000 caracteres por adjunto y 5 adjuntos por turno.
+
+### Cómo extraigo el project_metadata
+
+Con un LLM extractor: después de cada turno hago una segunda llamada que devuelve un JSON con los campos y lo valido con Pydantic (`app/services/conversation.py`).
+
+Probé pensarlo con regex pero para nombres de proyecto y alcance en texto libre era muy frágil. La llamada extra cuesta unos USD 0,0002 por turno con gpt-4o-mini. Si falla, me quedo con el metadata anterior y el turno sigue.
+
+Limitación: las tecnologías se acumulan, así que si el cliente quita algo (por ejemplo los pagos) la tecnología sigue en la lista. El cambio sí queda en `agreed_scope`.
+
+### Prueba con tres turnos
+
+| Turno | Mensaje | Total |
+|---|---|---|
+| 1 | App de reservas para GymFit + PDF de especificación | 168 h |
+| 2 | "Equipo de dos, y sumamos un panel web" | 226 h |
+| 3 | "Sacamos los pagos online" | 191 h |
+
+Las tecnologías del turno 1 (Stripe, Firebase, Node.js) salieron del PDF.
+
+### Tests de integración
+
+`tests/integration/test_sessions_api.py`, con `httpx.AsyncClient`:
+
+1. Dos turnos en la misma sesión: el metadata se actualiza y el segundo prompt ya trae el nombre del proyecto.
+2. La misma transcripción con y sin PDF: la estimación cambia.
+3. Ocho turnos: al modelo nunca le llegan más de `MAX_TURNS`.
+
 ## Sesión 04: del chat al formulario
 
 El chat dejaba el prompt en manos del usuario. Ahora el cliente manda parámetros tipados y el prompt lo arma el backend.
