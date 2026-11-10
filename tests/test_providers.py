@@ -29,14 +29,14 @@ async def test_fallback_stream_switches_before_first_token():
 
 
 async def test_exact_match_cache_avoids_second_call(fake_llm):
-    first = await llm_service.complete(MESSAGES)
-    second = await llm_service.complete(MESSAGES)
+    first = await llm_service.complete("sys", MESSAGES)
+    second = await llm_service.complete("sys", MESSAGES)
     assert len(fake_llm.calls) == 1
     assert not first.cache_hit and second.cache_hit
     assert second.cost_usd == 0.0
 
 
 async def test_cache_distinguishes_different_conversations(fake_llm):
-    await llm_service.complete(MESSAGES)
-    await llm_service.complete([{"role": "user", "content": "otra cosa"}])
+    await llm_service.complete("sys", MESSAGES)
+    await llm_service.complete("sys", [{"role": "user", "content": "otra cosa"}])
     assert len(fake_llm.calls) == 2
