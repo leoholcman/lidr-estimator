@@ -5,7 +5,7 @@ import structlog
 from fastapi import FastAPI
 
 from app.config import settings
-from app.routers import estimations
+from app.routers import estimations, sessions
 
 
 def configure_logging() -> None:
@@ -45,10 +45,11 @@ app = FastAPI(
         "de una reunión con el cliente. Usa Cache-Augmented Generation: las "
         "estimaciones históricas viajan como contexto en cada llamada al LLM."
     ),
-    version="0.2.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 app.include_router(estimations.router, prefix="/api/v1")
+app.include_router(sessions.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["health"])
