@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # Si el proveedor principal falla, prueba con el otro (si tiene API key)
     llm_fallback: bool = True
     cache_ttl_seconds: int = 3600
+    # Ventana deslizante de la memoria conversacional (pares user+assistant)
+    max_turns: int = 6
     app_env: str = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     # URL del servicio IA que usa el cliente Streamlit
