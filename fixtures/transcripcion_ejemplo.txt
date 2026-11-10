@@ -1,0 +1,7 @@
+Reunión con Laura (directora de marketing) y Pablo (responsable de IT) de una consultora de formación.
+
+Laura: Queremos renovar la web. Hoy es un WordPress viejo que nadie sabe mantener. Necesitamos una landing page para captar alumnos para nuestros cursos, con un formulario de contacto que mande los leads directamente a HubSpot, que es nuestro CRM.
+Pablo: Y un blog. Publicamos dos o tres artículos por semana, y el equipo de marketing tiene que poder escribirlos sin depender de nosotros, con un editor visual tipo WYSIWYG.
+Laura: El diseño ya lo tenemos hecho en Figma, lo hizo una agencia. Lo ideal sería tenerlo publicado en 4 semanas, antes de la campaña de enero.
+Pablo: El hosting lo podemos decidir, no estamos atados a nada. Lo que sí: tiene que cargar rápido y estar bien posicionado en Google.
+Laura: Más adelante querríamos un área privada para alumnos, pero eso no entra ahora.
