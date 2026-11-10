@@ -1,0 +1,12 @@
+<estimaciones_previas>
+{% for example in examples %}
+<ejemplo numero="{{ loop.index }}">
+<resumen_reunion>
+{{ example.meeting_summary }}
+</resumen_reunion>
+<estimacion>
+{{ example.estimation }}
+</estimacion>
+</ejemplo>
+{% endfor %}
+</estimaciones_previas>

@@ -1,0 +1,14 @@
+Estima el siguiente proyecto.
+
+<project_description>
+{{ description }}
+</project_description>
+{% if reference_projects %}
+
+<proyectos_similares>
+Proyectos parecidos que ya entregamos, con sus horas reales. Úsalos para calibrar:
+{% for ref in reference_projects %}
+- {{ ref.name }} ({{ ref.actual_hours }} h reales): {{ ref.summary }}
+{% endfor %}
+</proyectos_similares>
+{% endif %}
