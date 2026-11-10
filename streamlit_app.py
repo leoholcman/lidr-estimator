@@ -1,13 +1,11 @@
 """Cliente Streamlit del estimador."""
 
-import json
 import os
-from collections.abc import Iterator
 
 import httpx
 import streamlit as st
 
-from app.schemas import DetailLevel, EstimationRequest, OutputFormat, ProjectType
+from app.schemas import DetailLevel, OutputFormat, ProjectType
 
 API_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 TIMEOUT = httpx.Timeout(10.0, read=180.0)
@@ -32,129 +30,129 @@ FORMAT_LABELS = {
 st.set_page_config(page_title="Estimador", page_icon="📐", layout="wide")
 
 
-@st.cache_data(ttl=300)
-def fetch_versions() -> list[str]:
+def api_error(response: httpx.Response) -> str:
     try:
-        response = httpx.get(f"{API_URL}/api/v1/prompt/versions", timeout=5.0)
-        response.raise_for_status()
-        return response.json()["versions"]
-    except httpx.HTTPError:
-        return ["v1"]
+        return str(response.json().get("detail", response.text))
+    except ValueError:
+        return response.text
 
 
-def stream_estimate(payload: dict, version: str) -> Iterator[str]:
-    st.session_state.last_metrics = None
-    with httpx.stream(
-        "POST",
-        f"{API_URL}/api/v1/estimate/stream",
-        params={"prompt_version": version},
-        json=payload,
+def new_session() -> None:
+    response = httpx.post(f"{API_URL}/api/v1/sessions", timeout=10.0)
+    response.raise_for_status()
+    st.session_state.session_id = response.json()["session_id"]
+    st.session_state.turns = []  # lo que se muestra en pantalla
+    st.session_state.state = None  # último SessionState del servicio
+    st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
+
+
+def send_turn(transcript: str, files, params: dict) -> dict:
+    response = httpx.post(
+        f"{API_URL}/api/v1/sessions/{st.session_state.session_id}/estimate",
+        data={"transcript": transcript, **params},
+        files=[("attachments", (f.name, f.getvalue(), f.type)) for f in files],
         timeout=TIMEOUT,
-    ) as response:
-        if response.status_code >= 400:
-            response.read()
-            raise RuntimeError(response.text)
-        for line in response.iter_lines():
-            if not line:
-                continue
-            event = json.loads(line)
-            if event["type"] == "delta":
-                yield event["text"]
-            elif event["type"] == "done":
-                st.session_state.last_metrics = event
-            elif event["type"] == "error":
-                raise RuntimeError(event["detail"])
-
-
-def fetch_preview(payload: dict, version: str) -> dict | None:
-    try:
-        response = httpx.post(
-            f"{API_URL}/api/v1/prompt/preview",
-            params={"prompt_version": version},
-            json=payload,
-            timeout=5.0,
-        )
-        response.raise_for_status()
-        return response.json()
-    except httpx.HTTPError:
-        return None
-
-
-for key in ("last_metrics", "last_text", "last_payload", "last_version"):
-    st.session_state.setdefault(key, None)
-
-st.title("📐 Estimador de proyectos")
-
-form_col, result_col = st.columns([2, 3], gap="large")
-
-with form_col, st.form("estimation_form"):
-    description = st.text_area(
-        "Descripción del proyecto o transcripción de la reunión",
-        height=220,
-        max_chars=2000,
-        placeholder="El cliente necesita una plataforma web para...",
     )
-    project_type = st.selectbox(
+    if response.status_code == 404:
+        raise LookupError("La sesión ya no existe en el servicio (¿se reinició?).")
+    if response.status_code >= 400:
+        raise RuntimeError(api_error(response))
+    return response.json()
+
+
+if "session_id" not in st.session_state:
+    try:
+        new_session()
+    except httpx.HTTPError as e:
+        st.error(f"No se pudo conectar con el servicio IA en {API_URL}: {e}")
+        st.stop()
+
+# --- Sidebar: memoria del proyecto y métricas ---
+with st.sidebar:
+    if st.button("🆕 Nueva conversación", use_container_width=True):
+        new_session()
+        st.rerun()
+    st.caption(f"Sesión `{st.session_state.session_id[:8]}`")
+
+    state = st.session_state.state
+    st.header("🧠 project_metadata")
+    st.caption("Hechos del proyecto que se inyectan en el system prompt en cada turno.")
+    if state:
+        st.json(state["project_metadata"])
+        st.caption(
+            f"Historial: {state['turns_in_window']}/{state['max_turns']} turnos en la ventana "
+            f"· {state['total_turns']} en total"
+        )
+        st.header("Última llamada")
+        col1, col2 = st.columns(2)
+        col1.metric("Tokens entrada", state["usage"]["input_tokens"])
+        col2.metric("Tokens salida", state["usage"]["output_tokens"])
+        cost = state["cost_usd"]
+        col1.metric("Tiempo", f"{state['duration_ms'] / 1000:.1f} s")
+        col2.metric("Coste (¢)", f"{cost * 100:.3f}" if cost is not None else "—")
+        st.caption(f"prompt {state['prompt_version']} · {state['provider']} · {state['model']}")
+    else:
+        st.info("Vacío hasta el primer turno.")
+
+# --- Conversación ---
+st.title("📐 Estimador de proyectos")
+st.caption(
+    "Pegá la transcripción y adjuntá documentación (PDF, Word). "
+    "En los turnos siguientes podés refinar el alcance: el estimador recuerda el proyecto."
+)
+
+for turn in st.session_state.turns:
+    with st.chat_message("user"):
+        st.markdown(turn["transcript"])
+        if turn["attachments"]:
+            st.caption("📎 " + ", ".join(turn["attachments"]))
+    with st.chat_message("assistant"):
+        st.markdown(turn["text"])
+
+with st.form("turn_form", clear_on_submit=True):
+    transcript = st.text_area(
+        "Transcripción o mensaje",
+        height=150,
+        placeholder="En la reunión el cliente explicó que necesita...",
+    )
+    files = st.file_uploader(
+        "Adjuntos",
+        type=["pdf", "docx", "txt", "md"],
+        accept_multiple_files=True,
+        key=f"uploader_{st.session_state.uploader_key}",
+    )
+    col1, col2, col3 = st.columns(3)
+    project_type = col1.selectbox(
         "Tipo de proyecto", list(ProjectType), format_func=PROJECT_TYPE_LABELS.get
     )
-    detail_level = st.radio(
-        "Nivel de detalle",
-        list(DetailLevel),
-        index=1,
-        format_func=DETAIL_LABELS.get,
-        horizontal=True,
+    detail_level = col2.selectbox(
+        "Nivel de detalle", list(DetailLevel), index=1, format_func=DETAIL_LABELS.get
     )
-    output_format = st.radio("Formato", list(OutputFormat), format_func=FORMAT_LABELS.get)
-    version = st.selectbox("Versión del prompt", fetch_versions())
-    submitted = st.form_submit_button("Estimar", type="primary", use_container_width=True)
+    output_format = col3.selectbox("Formato", list(OutputFormat), format_func=FORMAT_LABELS.get)
+    submitted = st.form_submit_button("Enviar", type="primary", use_container_width=True)
 
-with result_col:
-    if submitted:
-        try:
-            # Validamos en el cliente con el mismo schema que el servicio
-            request = EstimationRequest(
-                description=description,
-                project_type=project_type,
-                detail_level=detail_level,
-                output_format=output_format,
-            )
-        except ValueError as e:
-            st.error(f"Revisá el formulario: {e.errors()[0]['msg']}")
-        else:
-            payload = request.model_dump(mode="json", exclude_none=True)
+if submitted:
+    if len(transcript.strip()) < 10:
+        st.warning("Escribí al menos una frase.")
+    else:
+        params = {
+            "project_type": project_type.value,
+            "detail_level": detail_level.value,
+            "output_format": output_format.value,
+        }
+        with st.spinner("Estimando y actualizando la memoria del proyecto..."):
             try:
-                text = st.write_stream(stream_estimate(payload, version))
+                result = send_turn(transcript, files or [], params)
+            except LookupError as e:
+                new_session()
+                st.warning(f"{e} Se abrió una conversación nueva: volvé a enviar el mensaje.")
             except (httpx.HTTPError, RuntimeError) as e:
                 st.error(f"No se pudo generar la estimación: {e}")
             else:
-                st.session_state.last_text = text
-                st.session_state.last_payload = payload
-                st.session_state.last_version = version
+                st.session_state.turns.append({
+                    "transcript": transcript,
+                    "attachments": [a["filename"] for a in result["attachments"]],
+                    "text": result["text"],
+                })
+                st.session_state.state = result
                 st.rerun()
-    elif st.session_state.last_text:
-        st.markdown(st.session_state.last_text)
-    else:
-        st.info("Completá el formulario para generar una estimación.")
-
-with st.sidebar:
-    st.header("Última llamada")
-    metrics = st.session_state.last_metrics
-    if metrics:
-        col1, col2 = st.columns(2)
-        col1.metric("Tokens entrada", metrics["usage"]["input_tokens"])
-        col2.metric("Tokens salida", metrics["usage"]["output_tokens"])
-        cost = metrics["cost_usd"]
-        col1.metric("Tiempo", f"{metrics['duration_ms'] / 1000:.1f} s")
-        col2.metric("Coste (¢)", f"{cost * 100:.3f}" if cost is not None else "—")
-        st.caption(
-            f"prompt {metrics['prompt_version']} · {metrics['provider']} · {metrics['model']}"
-            + (" · desde caché" if metrics["cache_hit"] else "")
-        )
-        preview = fetch_preview(st.session_state.last_payload, st.session_state.last_version)
-        if preview:
-            with st.expander("Prompt enviado: system"):
-                st.code(preview["system"], language="markdown", wrap_lines=True)
-            with st.expander("Prompt enviado: user"):
-                st.code(preview["user"], language="markdown", wrap_lines=True)
-    else:
-        st.caption("Todavía no hay llamadas.")
