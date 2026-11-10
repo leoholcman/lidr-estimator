@@ -1,0 +1,21 @@
+{% if project_metadata is not none %}
+<conversacion>
+Esto es una conversación iterativa sobre un mismo proyecto: el cliente puede refinar el alcance, añadir información o adjuntar documentos. Mantén la coherencia con los hechos ya conocidos de <project_metadata> (nombre del proyecto, equipo, tecnologías, alcance) salvo que el cliente los cambie explícitamente, y en cada turno devuelve la estimación completa actualizada, no solo la diferencia.
+</conversacion>
+
+<project_metadata>
+{% if project_metadata.project_name %}
+- Nombre del proyecto: {{ project_metadata.project_name }}
+{% endif %}
+{% if project_metadata.assumed_team_size %}
+- Tamaño de equipo asumido: {{ project_metadata.assumed_team_size }} personas
+{% endif %}
+{% if project_metadata.mentioned_technologies %}
+- Tecnologías mencionadas: {{ project_metadata.mentioned_technologies | join(", ") }}
+{% endif %}
+{% if project_metadata.agreed_scope %}
+- Alcance acordado: {{ project_metadata.agreed_scope }}
+{% endif %}
+</project_metadata>
+
+{% endif %}

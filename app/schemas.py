@@ -5,6 +5,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from app.sessions import ProjectMetadata
+
 
 class ProjectType(str, Enum):
     MOBILE_APP = "mobile_app"
@@ -68,3 +70,34 @@ class PromptPreview(BaseModel):
     prompt_version: str
     system: str
     user: str
+
+
+class SessionCreated(BaseModel):
+    session_id: str
+
+
+class AttachmentInfo(BaseModel):
+    filename: str
+    chars: int
+    truncated: bool
+
+
+class SessionState(BaseModel):
+    session_id: str
+    project_metadata: ProjectMetadata
+    total_turns: int
+    turns_in_window: int
+    max_turns: int
+
+
+class SessionEstimationResponse(SessionState):
+    text: str
+    prompt_version: str
+    attachments: list[AttachmentInfo]
+    model: str
+    provider: str
+    usage: TokenUsage
+    metadata_extraction_usage: TokenUsage | None
+    cost_usd: float | None = Field(description="Coste total del turno (estimación + extracción)")
+    duration_ms: int
+    created_at: datetime

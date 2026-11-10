@@ -12,3 +12,12 @@ Proyectos parecidos que ya entregamos, con sus horas reales. Úsalos para calibr
 {% endfor %}
 </proyectos_similares>
 {% endif %}
+{% for attachment in attachments %}
+
+--- attachment: {{ attachment.filename }} ---
+{{ attachment.text }}
+{% if attachment.truncated %}
+[... adjunto truncado ...]
+{% endif %}
+--- fin attachment: {{ attachment.filename }} ---
+{% endfor %}
