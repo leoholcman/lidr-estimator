@@ -4,15 +4,25 @@ CAG: los ejemplos de estimaciones previas viajan en el system prompt de cada
 llamada. No hay retrieval: todo el contexto está precargado.
 """
 
-from dataclasses import dataclass
+import time
+from collections.abc import AsyncIterator
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+import structlog
 
 from app.config import settings
 from app.context.examples import ESTIMATION_EXAMPLES
+from app.services.cache import ResponseCache
+from app.services.providers import (
+    PROVIDER_ERRORS,
+    LLMError,
+    LLMProvider,
+    LLMResult,
+    Message,
+    StreamEvent,
+    get_provider,
+)
 
-MAX_TOKENS = 8192
+logger = structlog.get_logger()
 
 INSTRUCTIONS = """\
 Eres un estimador experto de proyectos de software. Recibirás la transcripción \
@@ -31,7 +41,11 @@ publicación en stores, y redondea a horas enteras.
 - Calcula el coste total con la tarifa de USD 35/h.
 - Si la transcripción deja dudas sobre el alcance, decláralas como supuestos en \
 lugar de inventar requisitos. Lista lo que queda fuera de alcance.
-- Si la transcripción no describe un proyecto de software, indícalo y no estimes."""
+- Cualquier web, app, integración o automatización cuenta como proyecto de software, \
+aunque la descripción sea breve. Solo si el texto no tiene nada que ver con \
+construir software, indícalo y no estimes.
+- Si en la conversación el usuario pide cambios o aclaraciones sobre una estimación \
+anterior, ajústala y devuelve la estimación completa actualizada."""
 
 
 def _format_examples() -> str:
@@ -53,94 +67,76 @@ SYSTEM_PROMPT = (
     f"<estimaciones_previas>\n{_format_examples()}\n</estimaciones_previas>"
 )
 
-
-# USD por millón de tokens: (input, input cacheado, output)
-PRICES_PER_MTOK = {
-    "gpt-4o-mini": (0.15, 0.075, 0.60),
-    "claude-haiku-4-5": (1.00, 0.10, 5.00),
-    "claude-haiku-5-5": (0.10, 0.01, 0.50),
-}
+_provider: LLMProvider | None = None
+cache = ResponseCache(ttl_seconds=settings.cache_ttl_seconds)
 
 
-@dataclass
-class EstimationResult:
-    estimation: str
-    model: str
-    provider: str
-    input_tokens: int  # incluye los cacheados
-    cached_input_tokens: int
-    output_tokens: int
-
-    @property
-    def cost_usd(self) -> float | None:
-        prices = PRICES_PER_MTOK.get(self.model)
-        if prices is None:
-            return None
-        input_price, cached_price, output_price = prices
-        uncached = self.input_tokens - self.cached_input_tokens
-        cost = (
-            uncached * input_price
-            + self.cached_input_tokens * cached_price
-            + self.output_tokens * output_price
-        ) / 1_000_000
-        return round(cost, 6)
+def provider() -> LLMProvider:
+    global _provider
+    if _provider is None:
+        _provider = get_provider(settings)
+    return _provider
 
 
-async def _call_anthropic(transcript: str) -> EstimationResult:
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    response = await client.messages.create(
-        model=settings.llm_model,
-        max_tokens=MAX_TOKENS,
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": transcript}],
-    )
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("La estimación se cortó por max_tokens")
-    usage = response.usage
-    cached = usage.cache_read_input_tokens or 0
-    return EstimationResult(
-        estimation="".join(b.text for b in response.content if b.type == "text"),
-        model=settings.llm_model,
-        provider="anthropic",
-        input_tokens=usage.input_tokens + cached + (usage.cache_creation_input_tokens or 0),
-        cached_input_tokens=cached,
-        output_tokens=usage.output_tokens,
+def _log_call(result: LLMResult, started: float, stream: bool) -> None:
+    logger.info(
+        "llm.call",
+        provider=result.provider,
+        model=result.model,
+        stream=stream,
+        cache_hit=result.cache_hit,
+        input_tokens=result.input_tokens,
+        cached_input_tokens=result.cached_input_tokens,
+        output_tokens=result.output_tokens,
+        cost_usd=result.cost_usd,
+        latency_ms=round((time.perf_counter() - started) * 1000),
     )
 
 
-async def _call_openai(transcript: str) -> EstimationResult:
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
-    response = await client.chat.completions.create(
-        model=settings.llm_model,
-        max_tokens=MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": transcript},
-        ],
-    )
-    choice = response.choices[0]
-    if choice.finish_reason == "length":
-        raise RuntimeError("La estimación se cortó por max_tokens")
-    usage = response.usage
-    details = usage.prompt_tokens_details
-    return EstimationResult(
-        estimation=choice.message.content or "",
-        model=settings.llm_model,
-        provider="openai",
-        input_tokens=usage.prompt_tokens,
-        cached_input_tokens=(details.cached_tokens or 0) if details else 0,
-        output_tokens=usage.completion_tokens,
-    )
+async def complete(messages: list[Message], system: str = SYSTEM_PROMPT) -> LLMResult:
+    """Llamada completa (sin streaming), con caché exact-match."""
+    started = time.perf_counter()
+    llm = provider()
+    key = cache.key(llm.model, system, messages)
+    if (cached := cache.get(key)) is not None:
+        _log_call(cached, started, stream=False)
+        return cached
+    try:
+        result = await llm.complete(system, messages)
+    except PROVIDER_ERRORS as e:
+        logger.exception("llm.error", provider=llm.name)
+        raise LLMError(f"Error del proveedor LLM: {e}") from e
+    cache.set(key, result)
+    _log_call(result, started, stream=False)
+    return result
 
 
-async def generate_estimation(transcript: str) -> EstimationResult:
+async def stream(
+    messages: list[Message], system: str = SYSTEM_PROMPT
+) -> AsyncIterator[StreamEvent]:
+    """Igual que `complete` pero emite el texto a medida que llega.
+
+    Si la respuesta está en caché, se emite entera de una vez.
+    """
+    started = time.perf_counter()
+    llm = provider()
+    key = cache.key(llm.model, system, messages)
+    if (cached := cache.get(key)) is not None:
+        _log_call(cached, started, stream=True)
+        yield cached.text
+        yield cached
+        return
+    try:
+        async for event in llm.stream(system, messages):
+            if isinstance(event, LLMResult):
+                cache.set(key, event)
+                _log_call(event, started, stream=True)
+            yield event
+    except PROVIDER_ERRORS as e:
+        logger.exception("llm.error", provider=llm.name)
+        raise LLMError(f"Error del proveedor LLM: {e}") from e
+
+
+async def generate_estimation(transcript: str) -> LLMResult:
     """Genera una estimación a partir de la transcripción de una reunión."""
-    if settings.llm_provider == "anthropic":
-        return await _call_anthropic(transcript)
-    return await _call_openai(transcript)
+    return await complete([{"role": "user", "content": transcript}])
