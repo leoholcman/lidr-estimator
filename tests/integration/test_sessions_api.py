@@ -17,7 +17,13 @@ from tests.fakes import FakeProvider
 KNOWN_TECH = ["Stripe", "HubSpot", "Flutter", "Firebase"]
 
 
+def is_estimation(call) -> bool:
+    return not call[0].startswith(("Eres un extractor", "Mantienes el resumen"))
+
+
 def fake_responder(system: str, messages: list[dict]) -> str:
+    if system.startswith("Mantienes el resumen"):
+        return "Resumen: app de reservas, se fue ajustando el alcance."
     if system.startswith("Eres un extractor"):
         text = messages[-1]["content"]
         client_part = text.split("<mensaje_cliente>")[1]
@@ -79,7 +85,7 @@ async def test_metadata_updates_across_two_turns(client, fake):
     assert second["total_turns"] == 2
 
     # El segundo turno de estimación recibió la memoria en el system prompt
-    estimation_calls = [c for c in fake.calls if not c[0].startswith("Eres un extractor")]
+    estimation_calls = [c for c in fake.calls if is_estimation(c)]
     assert "- Nombre del proyecto: App de reservas" in estimation_calls[1][0]
 
     state = (await client.get(f"/api/v1/sessions/{session_id}")).json()
@@ -112,7 +118,7 @@ async def test_history_sent_to_llm_never_exceeds_max_turns(client, fake):
     for i in range(8):
         await send(client, session_id, f"Turno {i}: ajustamos el alcance de la app de reservas")
 
-    estimation_calls = [c for c in fake.calls if not c[0].startswith("Eres un extractor")]
+    estimation_calls = [c for c in fake.calls if is_estimation(c)]
     assert len(estimation_calls) == 8
     for _, messages in estimation_calls:
         previous_turns = (len(messages) - 1) // 2  # sin contar el mensaje nuevo
@@ -140,3 +146,40 @@ async def test_unsupported_attachment_returns_415(client, fake):
         files=[("attachments", ("foto.png", b"\x89PNG", "image/png"))],
     )
     assert response.status_code == 415
+
+
+async def test_evicted_turns_go_to_summary_or_anchors(client, fake):
+    session_id = await new_session(client)
+    max_turns = conversation.store.max_turns
+
+    await send(client, session_id, "El presupuesto queda cerrado en 30.000 EUR para la app de reservas")
+    for i in range(max_turns + 1):
+        await send(client, session_id, f"Turno {i}: sumamos otra pantalla a la app de reservas")
+
+    state = (await client.get(f"/api/v1/sessions/{session_id}")).json()
+    # el turno del presupuesto salió de la ventana pero quedó textual como ancla
+    assert state["anchors_count"] == 1
+    assert "30.000 EUR" in state["anchors"][0]
+    # el otro turno que salió fue al resumen
+    assert state["summary_chars"] > 0
+    assert state["message_count"] == max_turns * 2
+
+    # y ambos viajan en el system prompt del turno siguiente
+    await send(client, session_id, "Último ajuste de la app de reservas")
+    system = [c for c in fake.calls if is_estimation(c)][-1][0]
+    assert "<compromisos>" in system and "30.000 EUR" in system
+    assert "<resumen_conversacion>" in system
+
+
+async def test_tier_is_resolved_and_can_be_overridden(client, fake):
+    session_id = await new_session(client)
+    first = await send(client, session_id, "Hay un NDA firmado, es una app de reservas para un banco")
+    assert first["last_resolved_tier"] == "executive"
+    assert first["last_tier_rule"] == "nda_detected"
+    assert "<audiencia>" in [c for c in fake.calls if is_estimation(c)][-1][0]
+
+    response = await client.post(
+        f"/api/v1/sessions/{session_id}/estimate",
+        data={"transcript": "Sigamos con la app de reservas", "tier": "developer"},
+    )
+    assert response.json()["last_tier_rule"] == "explicit_override"

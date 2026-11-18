@@ -5,6 +5,7 @@ import pytest
 # Los tests no llaman a ningún proveedor: basta con una key de mentira.
 os.environ.setdefault("LLM_PROVIDER", "openai")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test")
+os.environ["SEMANTIC_CACHE_ENABLED"] = "false"  # usaría embeddings reales
 
 from app.services import llm_service
 from tests.fakes import FakeProvider

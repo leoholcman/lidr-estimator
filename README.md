@@ -2,7 +2,7 @@
 
 Proyecto del máster de AI Engineering (LIDR). Recibe la transcripción de una reunión con un cliente y devuelve una estimación del proyecto (tareas, horas y coste) generada con un LLM.
 
-Cada entrega está en su rama: `pre-session-02`, `pre-session-03`, etc. Cada una parte de la anterior.
+Cada entrega está en su rama: `pre-session-02`, `pre-session-03`, etc. Cada una parte de la anterior. Las ramas `post-session-NN` tienen lo que se sumó en el directo.
 
 ## Cómo levantarlo
 
@@ -22,6 +22,18 @@ uv run ruff check .
 ```
 
 Ningún test llama al LLM de verdad, usan un proveedor falso.
+
+## Después de la clase 5: anclas, resumen, tier y evals
+
+Rama `post-session-05`. Es lo que vimos en el directo de la sesión 5, llevado a mi repo. El Actor-Critic-Boss no lo porté (era opcional).
+
+- **Compresión del historial** (`app/compression.py`): los turnos que salen de la ventana ya no se descartan. Si traen un compromiso duradero (presupuesto cerrado, NDA, alcance congelado, fecha límite) quedan textuales como **anclas**; el resto se pliega en un **resumen acumulativo** con una llamada al LLM. Las anclas se detectan con regex: gratis y determinista. Prefiero que se escape alguna a marcar de más, porque nunca se borran.
+- **Tier** (`app/tier.py`): a quién le hablamos (`executive`, `pm`, `developer`, `default`). Se deduce con reglas en orden de precedencia o se fuerza con el campo `tier`. La respuesta dice qué regla ganó.
+- **Caché semántica** (`app/services/semantic_cache.py`): en memoria, con embeddings de OpenAI y umbral 0,92. Solo aplica al primer turno de una sesión; con historial, que dos mensajes se parezcan no garantiza que la respuesta sirva. En clase se usó Redis Stack; acá no quise sumar infraestructura.
+- **`GET /sessions/{id}`** ahora devuelve `message_count`, `anchors_count`, `summary_chars`, `anchors`, `summary`, `last_resolved_tier` y `last_tier_rule`.
+- **Evals** (`evals/`): un dataset golden chico (6 casos) y dos métricas deterministas (`ContentRecallMetric`, `HoursBoundsMetric`) con el patrón `MetricResult`. Se corre con `uv run python -m evals.run`.
+
+El prompt de un turno queda así: instrucciones + ejemplos + `<project_metadata>` + `<compromisos>` (anclas) + `<resumen_conversacion>` + `<audiencia>` (tier), y después la ventana de mensajes.
 
 ## Sesión 05: memoria conversacional y adjuntos
 
