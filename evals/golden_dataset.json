@@ -1,0 +1,20 @@
+[
+  {"id": "landing-hubspot", "project_type": "web_saas",
+   "description": "Landing page con formulario de contacto conectado a HubSpot y un blog con editor visual. El diseño ya existe en Figma.",
+   "expected_keywords": ["HubSpot", "blog", "Figma"], "expected_hours_range": [30, 160]},
+  {"id": "gym-reservas", "project_type": "mobile_app",
+   "description": "App móvil iOS y Android para que los socios de 5 gimnasios reserven clases, paguen bonos con tarjeta y reciban notificaciones push.",
+   "expected_keywords": ["reservas", "pagos", "push"], "expected_hours_range": [100, 400]},
+  {"id": "pedidos-odoo", "project_type": "internal_tool",
+   "description": "Automatizar la importación a Odoo de los pedidos que llegan por email en CSV y Excel, con un panel para corregir los que tengan errores.",
+   "expected_keywords": ["Odoo", "CSV", "panel"], "expected_hours_range": [25, 120]},
+  {"id": "etl-ventas", "project_type": "data_pipeline",
+   "description": "Pipeline diario que lea las ventas de tres tiendas Shopify, las normalice y las cargue en BigQuery para un dashboard en Looker Studio.",
+   "expected_keywords": ["Shopify", "BigQuery"], "expected_hours_range": [30, 200]},
+  {"id": "inventario", "project_type": "web_saas",
+   "description": "Plataforma web para gestionar el inventario de 3 almacenes con roles de administrador y operario, alertas de stock mínimo y un dashboard.",
+   "expected_keywords": ["inventario", "roles", "alertas"], "expected_hours_range": [40, 200]},
+  {"id": "vacaciones-rrhh", "project_type": "internal_tool",
+   "description": "Herramienta interna para que RRHH gestione vacaciones y ausencias de 200 empleados, con aprobación del jefe e integración con Google Calendar.",
+   "expected_keywords": ["vacaciones", "Google Calendar", "aprobación"], "expected_hours_range": [40, 200]}
+]
