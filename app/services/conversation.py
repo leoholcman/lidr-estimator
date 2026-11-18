@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 
 import structlog
@@ -41,6 +42,7 @@ class TurnResult:
     messages_sent: int  # mensajes user/assistant enviados al LLM (sin el system)
     # todas las llamadas al LLM del turno: estimación, extractor y resumen
     calls: list[LLMResult] = field(default_factory=list)
+    observation: dict = field(default_factory=dict)  # el evento turn_observed
 
 
 def _parse_metadata(text: str) -> ProjectMetadata:
@@ -107,6 +109,7 @@ async def run_turn(
     version: str = DEFAULT_VERSION,
 ) -> TurnResult:
     async with session.lock:
+        started = time.perf_counter()
         history = session.history
         calls: list[LLMResult] = []
 
@@ -158,18 +161,27 @@ async def run_turn(
         session.last_resolved_tier = tier.value
         session.last_tier_rule = tier_rule
 
-        logger.info(
-            "session.turn",
-            session_id=session.session_id,
-            turn=history.total_turns,
-            turns_in_window=len(history),
-            anchors_count=len(history.anchors),
-            summary_chars=len(history.summary or ""),
-            tier=tier.value,
-            tier_rule=tier_rule,
-            cache_hit_kind=cache_hit_kind,
-            attachments=[a.filename for a in attachments],
-        )
+        # Un único evento por turno con todo lo medible junto: se vuelca a CSV
+        # de una pasada, sin reconciliar cinco logs por timestamp.
+        billed = [c for c in calls if not c.cache_hit]
+        costs = [c.cost_usd for c in calls]
+        observation = {
+            "turn_index": history.total_turns,
+            "session_id": session.session_id,
+            "enriched_transcript_chars": len(transcript) + attachment_chars,
+            "attachments_total_chars": attachment_chars,
+            "messages_in_window": len(history) * 2,
+            "anchors_count": len(history.anchors),
+            "summary_chars": len(history.summary or ""),
+            "tokens_in": sum(c.input_tokens for c in billed),
+            "tokens_out": sum(c.output_tokens for c in billed),
+            "cost_usd": None if any(c is None for c in costs) else round(sum(costs), 6),
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "cache_hit_kind": cache_hit_kind,
+            "last_resolved_tier": tier.value,
+        }
+        session.last_turn = observation
+        logger.info("turn_observed", **observation, llm_calls=len(calls))
         return TurnResult(
             estimation=estimation,
             cache_hit_kind=cache_hit_kind,
@@ -177,4 +189,5 @@ async def run_turn(
             tier_rule=tier_rule,
             messages_sent=len(messages) - 1,
             calls=calls,
+            observation=observation,
         )

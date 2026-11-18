@@ -108,6 +108,7 @@ class Session:
     metadata: ProjectMetadata = field(default_factory=ProjectMetadata)
     last_resolved_tier: str | None = None
     last_tier_rule: str | None = None
+    last_turn: dict | None = None  # último evento turn_observed
     created_at: float = field(default_factory=time.time)
     # Serializa los turnos de una misma sesión (dos pestañas enviando a la vez)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)

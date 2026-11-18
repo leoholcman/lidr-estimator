@@ -97,6 +97,7 @@ class SessionState(BaseModel):
     summary: str | None
     last_resolved_tier: str | None
     last_tier_rule: str | None
+    last_turn: dict | None = Field(default=None, description="Último evento turn_observed")
 
 
 class SessionEstimationResponse(SessionState):

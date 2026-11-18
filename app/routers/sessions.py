@@ -49,6 +49,7 @@ def _state(session: Session) -> dict:
         "summary": session.history.summary,
         "last_resolved_tier": session.last_resolved_tier,
         "last_tier_rule": session.last_tier_rule,
+        "last_turn": session.last_turn,
     }
 
 
