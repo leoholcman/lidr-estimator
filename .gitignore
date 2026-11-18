@@ -18,3 +18,6 @@ wheels/
 # Tests
 .pytest_cache/
 .ruff_cache/
+
+# PDFs del stress test (se regeneran)
+evals/stress/fixtures/*.pdf
