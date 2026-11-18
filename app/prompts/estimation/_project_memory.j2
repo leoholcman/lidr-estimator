@@ -18,4 +18,36 @@ Esto es una conversación iterativa sobre un mismo proyecto: el cliente puede re
 {% endif %}
 </project_metadata>
 
+{% if anchors %}
+<compromisos>
+Mensajes anteriores del cliente con compromisos que siguen vigentes. Respétalos; si dos se contradicen, vale el último.
+{% for anchor in anchors %}
+- {{ anchor }}
+{% endfor %}
+</compromisos>
+
+{% endif %}
+{% if summary %}
+<resumen_conversacion>
+Resumen de los turnos anteriores que ya no están en el historial:
+{{ summary }}
+</resumen_conversacion>
+
+{% endif %}
+{% if tier == "executive" %}
+<audiencia>
+Lee un perfil ejecutivo: empieza con el total, el plazo y los 3 riesgos principales en viñetas; el desglose va después y sin jerga técnica.
+</audiencia>
+
+{% elif tier == "pm" %}
+<audiencia>
+Lee un project manager: organiza el trabajo en hitos con su orden y dependencias, y marca qué se puede recortar si falta presupuesto.
+</audiencia>
+
+{% elif tier == "developer" %}
+<audiencia>
+Lee un equipo técnico: sé específico con arquitectura, componentes e integraciones, y separa las tareas de infraestructura.
+</audiencia>
+
+{% endif %}
 {% endif %}
