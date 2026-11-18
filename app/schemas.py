@@ -83,21 +83,31 @@ class AttachmentInfo(BaseModel):
 
 
 class SessionState(BaseModel):
+    """Estado de la sesión. `GET /sessions/{id}` lo devuelve para depurar."""
+
     session_id: str
     project_metadata: ProjectMetadata
     total_turns: int
     turns_in_window: int
     max_turns: int
+    message_count: int
+    anchors_count: int
+    summary_chars: int
+    anchors: list[str]
+    summary: str | None
+    last_resolved_tier: str | None
+    last_tier_rule: str | None
 
 
 class SessionEstimationResponse(SessionState):
     text: str
     prompt_version: str
     attachments: list[AttachmentInfo]
+    cache_hit_kind: str
     model: str
     provider: str
-    usage: TokenUsage
-    metadata_extraction_usage: TokenUsage | None
-    cost_usd: float | None = Field(description="Coste total del turno (estimación + extracción)")
+    usage: TokenUsage = Field(description="Tokens de la llamada de estimación")
+    llm_calls: int = Field(description="Llamadas al LLM del turno (estimación, extractor, resumen)")
+    cost_usd: float | None = Field(description="Coste total del turno, sumando todas las llamadas")
     duration_ms: int
     created_at: datetime

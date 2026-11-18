@@ -21,6 +21,7 @@ from app.services.attachments import AttachmentError, ExtractedAttachment, extra
 from app.services.conversation import run_turn, store
 from app.services.providers import LLMError, LLMResult
 from app.sessions import Session
+from app.tier import Tier
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -41,6 +42,13 @@ def _state(session: Session) -> dict:
         "total_turns": session.history.total_turns,
         "turns_in_window": len(session.history),
         "max_turns": session.history.max_turns,
+        "message_count": len(session.history) * 2,
+        "anchors_count": len(session.history.anchors),
+        "summary_chars": len(session.history.summary or ""),
+        "anchors": session.history.anchors,
+        "summary": session.history.summary,
+        "last_resolved_tier": session.last_resolved_tier,
+        "last_tier_rule": session.last_tier_rule,
     }
 
 
@@ -69,6 +77,7 @@ async def estimate_in_session(
     project_type: Annotated[ProjectType, Form()] = ProjectType.WEB_SAAS,
     detail_level: Annotated[DetailLevel, Form()] = DetailLevel.MEDIUM,
     output_format: Annotated[OutputFormat, Form()] = OutputFormat.LINE_ITEMS,
+    tier: Annotated[Tier | None, Form(description="Fuerza el tier; si no viene se deduce")] = None,
     attachments: Annotated[list[UploadFile] | None, File(description="PDF, DOCX, TXT o MD")] = None,
     prompt_version: str = Query(DEFAULT_VERSION),
 ) -> SessionEstimationResponse:
@@ -101,12 +110,13 @@ async def estimate_in_session(
             project_type=project_type,
             detail_level=detail_level,
             output_format=output_format,
+            tier_override=tier,
             version=prompt_version,
         )
     except LLMError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
-    costs = [r.cost_usd for r in (turn.estimation, turn.extraction) if r is not None]
+    costs = [call.cost_usd for call in turn.calls]
     total_cost = None if any(c is None for c in costs) else round(sum(costs), 6)
     return SessionEstimationResponse(
         **_state(session),
@@ -116,10 +126,11 @@ async def estimate_in_session(
             AttachmentInfo(filename=a.filename, chars=len(a.text), truncated=a.truncated)
             for a in extracted
         ],
+        cache_hit_kind=turn.cache_hit_kind,
         model=turn.estimation.model,
         provider=turn.estimation.provider,
         usage=_usage(turn.estimation),
-        metadata_extraction_usage=_usage(turn.extraction) if turn.extraction else None,
+        llm_calls=len(turn.calls),
         cost_usd=total_cost,
         duration_ms=round((time.perf_counter() - start) * 1000),
         created_at=datetime.now(UTC),

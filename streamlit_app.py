@@ -83,6 +83,14 @@ with st.sidebar:
             f"Historial: {state['turns_in_window']}/{state['max_turns']} turnos en la ventana "
             f"· {state['total_turns']} en total"
         )
+        st.caption(f"Tier: {state['last_resolved_tier']} ({state['last_tier_rule']})")
+        if state["anchors"]:
+            with st.expander(f"Anclas ({state['anchors_count']})"):
+                for anchor in state["anchors"]:
+                    st.markdown(f"- {anchor}")
+        if state["summary"]:
+            with st.expander("Resumen de turnos anteriores"):
+                st.write(state["summary"])
         st.header("Última llamada")
         col1, col2 = st.columns(2)
         col1.metric("Tokens entrada", state["usage"]["input_tokens"])
@@ -90,7 +98,10 @@ with st.sidebar:
         cost = state["cost_usd"]
         col1.metric("Tiempo", f"{state['duration_ms'] / 1000:.1f} s")
         col2.metric("Coste (¢)", f"{cost * 100:.3f}" if cost is not None else "—")
-        st.caption(f"prompt {state['prompt_version']} · {state['provider']} · {state['model']}")
+        st.caption(
+            f"prompt {state['prompt_version']} · {state['provider']} · {state['model']} "
+            f"· caché: {state['cache_hit_kind']}"
+        )
     else:
         st.info("Vacío hasta el primer turno.")
 

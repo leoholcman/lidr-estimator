@@ -2,26 +2,32 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
+from openai import OpenAIError
 from pydantic import ValidationError
 
+from app.compression import compress
 from app.config import settings
 from app.prompts.loader import (
     DEFAULT_VERSION,
     render_metadata_extraction_prompt,
     render_session_prompt,
+    render_summary_prompt,
 )
 from app.schemas import DetailLevel, OutputFormat, ProjectType
 from app.services import llm_service
 from app.services.attachments import ExtractedAttachment
-from app.services.providers import LLMError, LLMResult
-from app.sessions import ProjectMetadata, Session, SessionStore
+from app.services.providers import LLMError, LLMResult, Message
+from app.services.semantic_cache import build_semantic_cache
+from app.sessions import ProjectMetadata, Session, SessionStore, Turn
+from app.tier import Tier, resolve_tier
 
 logger = structlog.get_logger()
 
 store = SessionStore(max_turns=settings.max_turns)
+semantic_cache = build_semantic_cache()
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -29,8 +35,12 @@ _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 @dataclass
 class TurnResult:
     estimation: LLMResult
-    extraction: LLMResult | None
+    cache_hit_kind: str  # "none" | "exact" | "semantic"
+    tier: Tier
+    tier_rule: str
     messages_sent: int  # mensajes user/assistant enviados al LLM (sin el system)
+    # todas las llamadas al LLM del turno: estimación, extractor y resumen
+    calls: list[LLMResult] = field(default_factory=list)
 
 
 def _parse_metadata(text: str) -> ProjectMetadata:
@@ -61,6 +71,30 @@ async def extract_metadata(
     return merged, result
 
 
+async def _estimate(
+    session: Session, system: str, messages: list[Message], bucket: str, user: str
+) -> tuple[LLMResult, str]:
+    """Estimación con las dos cachés: primero la exacta, después la semántica."""
+    if llm_service.is_cached(system, messages):
+        return await llm_service.complete(system, messages), "exact"
+
+    first_turn = session.history.total_turns == 0
+    vector = None
+    if first_turn and semantic_cache is not None:
+        try:
+            hit, vector = await semantic_cache.lookup(bucket, user)
+        except OpenAIError as e:  # sin embeddings seguimos sin caché semántica
+            logger.warning("semantic_cache.failed", error=str(e)[:200])
+            hit = None
+        if hit is not None:
+            return hit, "semantic"
+
+    result = await llm_service.complete(system, messages)
+    if vector is not None:
+        semantic_cache.store(bucket, vector, result)
+    return result, "none"
+
+
 async def run_turn(
     session: Session,
     *,
@@ -69,9 +103,14 @@ async def run_turn(
     project_type: ProjectType,
     detail_level: DetailLevel,
     output_format: OutputFormat,
+    tier_override: Tier | None = None,
     version: str = DEFAULT_VERSION,
 ) -> TurnResult:
     async with session.lock:
+        history = session.history
+        calls: list[LLMResult] = []
+
+        tier, tier_rule = resolve_tier(transcript, session.metadata, tier_override)
         system, user = render_session_prompt(
             transcript=transcript,
             attachments=attachments,
@@ -79,23 +118,63 @@ async def run_turn(
             detail_level=detail_level,
             output_format=output_format,
             project_metadata=session.metadata,
+            anchors=history.anchors,
+            summary=history.summary,
+            tier=tier.value,
             version=version,
         )
-        messages = session.history.to_messages_list(system, pending_user=user)
+        messages = history.to_messages_list(system, pending_user=user)
+        attachment_chars = sum(len(a.text) for a in attachments)
+        bucket = ":".join([
+            version, project_type.value, detail_level.value, output_format.value,
+            tier.value, str(attachment_chars),
+        ])
         # to_messages_list incluye el system como primer mensaje; los
         # proveedores lo reciben aparte.
-        estimation = await llm_service.complete(messages[0]["content"], messages[1:])
+        estimation, cache_hit_kind = await _estimate(session, system, messages[1:], bucket, user)
+        calls.append(estimation)
 
-        session.history.add_turn(user, estimation.text)
+        history.add_turn(transcript, user, estimation.text)
+
+        async def summarize(previous: str | None, evicted: list[Turn]) -> str:
+            summary_system, summary_user = render_summary_prompt(previous, evicted)
+            try:
+                result = await llm_service.complete(
+                    summary_system, [{"role": "user", "content": summary_user}]
+                )
+            except LLMError as e:
+                logger.warning("summarizer.failed", error=str(e)[:200])
+                return previous or ""
+            calls.append(result)
+            return result.text.strip()
+
+        await compress(history, summarize)
+
         session.metadata, extraction = await extract_metadata(
             session.metadata, user, estimation.text
         )
+        if extraction is not None:
+            calls.append(extraction)
+        session.last_resolved_tier = tier.value
+        session.last_tier_rule = tier_rule
+
         logger.info(
             "session.turn",
             session_id=session.session_id,
-            turn=session.history.total_turns,
-            turns_in_window=len(session.history),
-            messages_sent=len(messages) - 1,
+            turn=history.total_turns,
+            turns_in_window=len(history),
+            anchors_count=len(history.anchors),
+            summary_chars=len(history.summary or ""),
+            tier=tier.value,
+            tier_rule=tier_rule,
+            cache_hit_kind=cache_hit_kind,
             attachments=[a.filename for a in attachments],
         )
-        return TurnResult(estimation, extraction, messages_sent=len(messages) - 1)
+        return TurnResult(
+            estimation=estimation,
+            cache_hit_kind=cache_hit_kind,
+            tier=tier,
+            tier_rule=tier_rule,
+            messages_sent=len(messages) - 1,
+            calls=calls,
+        )
