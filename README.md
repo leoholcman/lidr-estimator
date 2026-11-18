@@ -23,6 +23,24 @@ uv run ruff check .
 
 Ningún test llama al LLM de verdad, usan un proveedor falso.
 
+## Sesión 06: stress test del CAG
+
+Rama `pre-session-06`. No agrega producto: mide dónde se degrada el estimador. El reporte está en [`evals/stress/REPORT.md`](evals/stress/REPORT.md) y los datos en `evals/stress/results.csv`.
+
+```bash
+uv run uvicorn app.main:app --port 8000          # en otra terminal
+uv run python -m evals.stress.run --http http://localhost:8000 \
+    --scenarios growing,pivot,contradiction --attachment-sizes 0,5,20,50,100 --repeats 3
+uv run python -m evals.stress.report evals/stress/results.csv
+```
+
+- Cada turno emite un único evento `turn_observed` con 13 campos (tokens, coste, latencia, ventana, anclas, resumen, caché, tier). También va en `GET /sessions/{id}` como `last_turn`.
+- `evals/stress/scenarios.py`: tres conversaciones de 20 turnos (un proyecto que crece, uno que cambia de stack, uno que cambia el presupuesto), cada una con los hechos que se deberían recordar.
+- `evals/stress/fixtures/build_pdfs.py`: PDFs sintéticos de 5 a 100 KB con tres requisitos plantados al principio, al medio y al final.
+- `evals/stress/metrics.py`: `LatencyBudgetMetric`, `CostBudgetMetric` y `MemoryDriftMetric`, deterministas.
+
+Resumen de lo que encontré: lo primero que se rompe es la latencia (el SLA de 10 s cae entre los turnos 9 y 11); la memoria pierde requisitos sin avisar en proyectos largos; y los adjuntos de más de 20.000 caracteres se truncan en silencio y hasta pueden recibir una respuesta equivocada de la caché semántica.
+
 ## Después de la clase 5: anclas, resumen, tier y evals
 
 Rama `post-session-05`. Es lo que vimos en el directo de la sesión 5, llevado a mi repo. El Actor-Critic-Boss no lo porté (era opcional).
