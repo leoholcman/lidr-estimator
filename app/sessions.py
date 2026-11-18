@@ -1,4 +1,4 @@
-"""Estado de la conversación: historial (ventana deslizante) y metadata del proyecto.
+"""Estado de la conversación: historial (ventana, anclas y resumen) y metadata del proyecto.
 
 Todo vive en memoria del proceso, así que se pierde al reiniciar el servicio.
 Para esta fase alcanza; si hiciera falta persistir, se cambia SessionStore.
@@ -47,36 +47,55 @@ class ProjectMetadata(BaseModel):
         )
 
 
-class ConversationHistory:
-    """Ventana deslizante de los últimos `max_turns` turnos (par user + assistant).
+@dataclass
+class Turn:
+    transcript: str  # lo que escribió el cliente, sin adjuntos ni envoltorio
+    user: str  # el mensaje user tal como viajó al modelo
+    assistant: str
 
-    El system prompt no se guarda acá: se regenera en cada llamada a partir del
-    `ProjectMetadata` actual, así que siempre está presente y actualizado.
+
+class ConversationHistory:
+    """Historial de la conversación en tres niveles.
+
+    - `turns`: la ventana reciente (hasta `max_turns` pares), textual.
+    - `anchors`: turnos que salieron de la ventana pero traen un compromiso
+      que no se puede perder (presupuesto cerrado, NDA...). Textuales.
+    - `summary`: resumen acumulativo del resto de turnos que salieron.
+
+    Quién va a cada nivel lo decide `app/compression.py`. El system prompt no
+    se guarda acá: se regenera en cada turno.
     """
 
     def __init__(self, max_turns: int = DEFAULT_MAX_TURNS):
         if max_turns < 1:
             raise ValueError("max_turns debe ser >= 1")
         self.max_turns = max_turns
-        self._turns: list[tuple[str, str]] = []
-        self.total_turns = 0  # incluye los descartados
+        self.turns: list[Turn] = []
+        self.anchors: list[str] = []
+        self.summary: str | None = None
+        self.total_turns = 0  # incluye los que ya salieron de la ventana
 
-    def add_turn(self, user: str, assistant: str) -> None:
-        self._turns.append((user, assistant))
+    def add_turn(self, transcript: str, user: str, assistant: str) -> None:
+        self.turns.append(Turn(transcript, user, assistant))
         self.total_turns += 1
-        if len(self._turns) > self.max_turns:
-            # descarta los pares más antiguos
-            self._turns = self._turns[-self.max_turns :]
+
+    def overflow(self) -> list[Turn]:
+        """Saca de la ventana los turnos que sobran (los más viejos) y los devuelve."""
+        extra = len(self.turns) - self.max_turns
+        if extra <= 0:
+            return []
+        evicted, self.turns = self.turns[:extra], self.turns[extra:]
+        return evicted
 
     def __len__(self) -> int:
-        return len(self._turns)
+        return len(self.turns)
 
     def to_messages_list(self, system_prompt: str, pending_user: str | None = None) -> list[Message]:
         """Array `messages` listo para la API: system + ventana (+ mensaje nuevo)."""
         messages: list[Message] = [{"role": "system", "content": system_prompt}]
-        for user, assistant in self._turns:
-            messages.append({"role": "user", "content": user})
-            messages.append({"role": "assistant", "content": assistant})
+        for turn in self.turns:
+            messages.append({"role": "user", "content": turn.user})
+            messages.append({"role": "assistant", "content": turn.assistant})
         if pending_user is not None:
             messages.append({"role": "user", "content": pending_user})
         return messages
@@ -87,6 +106,8 @@ class Session:
     session_id: str
     history: ConversationHistory
     metadata: ProjectMetadata = field(default_factory=ProjectMetadata)
+    last_resolved_tier: str | None = None
+    last_tier_rule: str | None = None
     created_at: float = field(default_factory=time.time)
     # Serializa los turnos de una misma sesión (dos pestañas enviando a la vez)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)

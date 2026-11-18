@@ -44,6 +44,9 @@ def _render_estimation(version: str, **fields) -> tuple[str, str]:
         "reference_projects": [],
         "attachments": [],
         "project_metadata": None,  # None = petición sin sesión (no hay bloque de memoria)
+        "anchors": [],
+        "summary": None,
+        "tier": "default",
         "examples": ESTIMATION_EXAMPLES,
     } | fields
     system = _render(f"estimation/{version}/system.j2", **context)
@@ -81,6 +84,9 @@ def render_session_prompt(
     detail_level: DetailLevel,
     output_format: OutputFormat,
     project_metadata: "ProjectMetadata",
+    anchors: list[str] | None = None,
+    summary: str | None = None,
+    tier: str = "default",
     version: str = DEFAULT_VERSION,
 ) -> tuple[str, str]:
     """Prompt de un turno conversacional.
@@ -96,6 +102,9 @@ def render_session_prompt(
         output_format=output_format.value,
         attachments=[vars(a) for a in attachments],
         project_metadata=project_metadata.model_dump(),
+        anchors=anchors or [],
+        summary=summary,
+        tier=tier,
     )
 
 
@@ -108,5 +117,13 @@ def render_metadata_extraction_prompt(
         previous_metadata=previous.model_dump_json(),
         user_message=user_message,
         assistant_message=assistant_message,
+    )
+    return system, user
+
+
+def render_summary_prompt(previous_summary: str | None, evicted: list) -> tuple[str, str]:
+    system = _render("conversation_summary/v1/system.j2")
+    user = _render(
+        "conversation_summary/v1/user.j2", previous_summary=previous_summary, evicted=evicted
     )
     return system, user

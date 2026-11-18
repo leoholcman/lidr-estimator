@@ -1,0 +1,11 @@
+<resumen_anterior>
+{{ previous_summary or "(vacío)" }}
+</resumen_anterior>
+
+<turnos_que_salen>
+{% for turn in evicted %}
+Cliente: {{ turn.transcript }}
+Estimador: {{ turn.assistant | truncate(600) }}
+
+{% endfor %}
+</turnos_que_salen>
