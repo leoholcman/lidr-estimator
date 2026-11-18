@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 3600
     # Ventana deslizante de la memoria conversacional (pares user+assistant)
     max_turns: int = 6
+    # Caché semántica (solo primer turno de una sesión). Usa embeddings de OpenAI.
+    semantic_cache_enabled: bool = True
+    semantic_cache_threshold: float = 0.92
+    embedding_model: str = "text-embedding-3-small"
     app_env: str = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     # URL del servicio IA que usa el cliente Streamlit

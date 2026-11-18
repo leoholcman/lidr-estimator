@@ -51,6 +51,11 @@ def _log_call(result: LLMResult, started: float, stream: bool) -> None:
     )
 
 
+def is_cached(system: str, messages: list[Message]) -> bool:
+    """True si esa llamada exacta ya está en la caché exact-match."""
+    return cache.get(cache.key(provider().model, system, messages)) is not None
+
+
 async def complete(system: str, messages: list[Message]) -> LLMResult:
     """Llamada completa (sin streaming), con caché exact-match."""
     started = time.perf_counter()
