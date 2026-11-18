@@ -126,7 +126,7 @@ async def run_scenario(client, scenario: Scenario, repeat: int, turns: int, writ
               f"{observation['latency_ms']:>6} ms  {observation['tokens_in']:>6} tok  {observation['cache_hit_kind']}")
 
 
-async def run_attachments(client, sizes: list[int], repeats: int, write) -> None:
+async def run_attachments(client, sizes: list[int], repeats: int, write, label: str = "attachment") -> None:
     for size in sizes:
         pdf = None
         if size:
@@ -137,7 +137,7 @@ async def run_attachments(client, sizes: list[int], repeats: int, write) -> None
             observation = snapshot["last_turn"]
             found = [token for _, _, token in PLANTED if token.lower() in snapshot["text"].lower()]
             write({
-                "block": "attachment", "scenario": "attachment", "repeat": repeat, "attachment_kb": size,
+                "block": "attachment", "scenario": label, "repeat": repeat, "attachment_kb": size,
                 **{k: observation[k] for k in OBSERVED},
                 "attachment_recall": round(len(found) / len(PLANTED), 3) if size else "",
                 "attachment_truncated": int(any(a["truncated"] for a in snapshot["attachments"])),
@@ -162,6 +162,9 @@ async def main() -> None:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--turns", type=int, default=20, help="turnos por escenario (máx. 20)")
     parser.add_argument("--output", default="evals/stress/results.csv")
+    parser.add_argument("--attachment-label", default="attachment",
+                        help="nombre del escenario de adjuntos en el CSV (para distinguir corridas)")
+    parser.add_argument("--append", action="store_true", help="agrega filas a un CSV existente")
     args = parser.parse_args()
 
     scenarios = [SCENARIOS[name] for name in args.scenarios.split(",") if name]
@@ -172,18 +175,20 @@ async def main() -> None:
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", newline="") as handle:  # noqa: ASYNC230
+    append = args.append and output.exists()
+    with output.open("a" if append else "w", newline="") as handle:  # noqa: ASYNC230
         writer = csv.DictWriter(handle, fieldnames=COLUMNS, restval="")
 
         def write(row: dict) -> None:
             writer.writerow(row)
             handle.flush()  # si se corta a mitad, lo medido queda
 
-        writer.writeheader()
+        if not append:
+            writer.writeheader()
         async with make_client(args.http) as client:
             await asyncio.gather(
                 *(run_repeats(client, s, args.repeats, args.turns, write) for s in scenarios),
-                run_attachments(client, sizes, args.repeats, write),
+                run_attachments(client, sizes, args.repeats, write, args.attachment_label),
             )
     print(f"\nListo: {output}")
 

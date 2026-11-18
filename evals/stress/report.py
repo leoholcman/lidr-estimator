@@ -146,19 +146,20 @@ def recall_vs_n(rows: list[dict]) -> str:
 def attachments_table(rows: list[dict]) -> str:
     out = []
     attachment = [r for r in rows if r["block"] == "attachment"]
-    for size in dict.fromkeys(int(r["attachment_kb"]) for r in attachment):
-        group = [r for r in attachment if int(r["attachment_kb"]) == size]
-        first = cold(group)[0] if cold(group) else group[0]
+    keys = dict.fromkeys((r["scenario"], int(r["attachment_kb"])) for r in attachment)
+    for scenario, size in keys:
+        group = [r for r in attachment if r["scenario"] == scenario and int(r["attachment_kb"]) == size]
+        first = cold(group)[0] if cold(group) else group[0]  # sin fila en frío: se ve la de caché
         recalls = [r["attachment_recall"] for r in group if r["attachment_recall"] is not None]
         out.append([
-            size, f"{first['attachments_total_chars']:.0f}", f"{first['tokens_in']:.0f}",
+            scenario, size, f"{first['attachments_total_chars']:.0f}", f"{first['tokens_in']:.0f}",
             f"{first['latency_ms']:.0f}", f"{first['cost_usd']:.5f}",
             f"{mean(recalls):.2f}" if recalls else "n/a",
             "sí" if any(r["attachment_truncated"] for r in group) else "no",
             ", ".join(r["cache_hit_kind"] for r in group),
         ])
     return table(
-        ["Adjunto (KB)", "Caracteres al prompt", "tokens_in (en frío)", "Latencia en frío (ms)",
+        ["Corrida", "Adjunto (KB)", "Caracteres al prompt", "tokens_in (en frío)", "Latencia en frío (ms)",
          "Coste en frío (USD)", "Recall del adjunto", "Truncado", "Caché por repetición"],
         out,
     )
